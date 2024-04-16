@@ -1,0 +1,224 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Authors: Wangyiwei<173549182@qq.com> of Flatten
+
+# params: 
+#@ export CODE_VERSION_DIR=xxx 覆盖默认version.go位置
+#@ export NOSTRIP=1 开启编译符号表和调试信息，用于debug
+#@ export NOOPT=1 禁用优化，禁用函数内联，用于debug
+#@ export RACE=1 开启数据竞争检测，用于debug
+#@ export GO_MOD_VENDOR=1 使用vendor模式
+
+SHELL := /usr/bin/env bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+# 根文件目录
+ROOT_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
+# 相对路径
+RELATIVE_DIR := $(shell echo $(realpath .) | sed "s;$(ROOT_DIR)[/]*;;")
+
+empty :=
+space := $(empty) $(empty)
+comma := ,
+join-with-comma = $(subst $(space),$(comma),$(strip $1))
+
+define newline
+
+
+endef
+
+# 版本号
+VERSION = $(shell cat $(ROOT_DIR)/VERSION)
+# 主版本号
+VERSION_MAJOR = $(shell cat $(ROOT_DIR)/VERSION | cut -d. -f1)
+# 次版本号
+VERSION_MINOR = $(shell cat $(ROOT_DIR)/VERSION | cut -d. -f2)
+# 补丁版本号
+VERSION_PATCH = $(shell cat $(ROOT_DIR)/VERSION | cut -d. -f3 | cut -d - -f1)
+# 版本说明
+VERSION_IDENTIFIER = $(shell cat $(ROOT_DIR)/VERSION | cut -d - -f2)
+# git版本号
+GIT_VERSION = $(shell git show -s --format='format:%h')
+# 版本号+git版本号
+FULL_BUILD_VERSION = $(VERSION) $(GIT_VERSION)
+
+INSTALL = install
+GO = go
+export KUBECTL ?= kubectl
+# use gsed if available, otherwise use sed.
+# gsed is needed for MacOS to make in-place replacement work correctly.
+SED ?= $(if $(shell command -v gsed),gsed,sed)
+
+## 容器相关 ##
+CONTAINER_ENGINE?=docker
+DOCKER_FLAGS ?=
+DOCKER_BUILD_FLAGS ?=
+DOCKER_IMAGE_TAG ?= latest
+
+# 终端宽度
+TERM_WIDTH := $(shell tput cols)
+
+## Go语言相关 ##
+
+# Go版本确保最新
+# renovate: datasource=golang-version depName=go
+GO_VERSION := 1.22.0
+GOPATH ?= $(shell $(GO) env GOPATH)
+ifeq "$(GOPATH)" ""
+  #$(error Please set the environment variable GOPATH before running `make`)
+endif
+GOROOT ?= $(shell $(GO) env GOROOT)
+GOBIN ?= $(shell $(GO) env GOBIN)
+ifeq "$(GOBIN)" ""
+	GOBIN=${GOPATH}/bin
+endif
+GOARCH ?= $(shell $(GO) env GOARCH)
+GOOS ?= $(shell $(GO) env GOOS)
+# 包名
+ROOT_GO_MODULE = $(shell $(GO) list -m)
+# go build的参数
+GO_BUILD_FLAGS =
+# go build控制编译链接的参数
+GO_BUILD_LDFLAGS =
+# go build的tags
+GO_TAGS_FLAGS = 
+
+# go test的参数
+GO_TEST_FLAGS = -vet=all
+# go test有关覆盖率的参数
+GOTEST_COVER_OPTS = -coverprofile=coverage.out
+# 要测试的包
+TESTPKGS ?= ./...
+
+# go clean的参数
+GO_CLEAN_FLAGS = 
+
+# 指定version.go的包路径和变量名，用于在go build时将FULL_BUILD_VERSION注入
+CODE_VERSION_DIR ?= /pkg/version.Version
+GO_BUILD_LDFLAGS += -X "$(ROOT_GO_MODULE)$(CODE_VERSION_DIR)=$(FULL_BUILD_VERSION)"
+
+# 处理go test覆盖率报告的输出
+# 默认情况直接打印，如果安装了tparse则用tparse输出
+# tparse是一个解析覆盖率报告的工具https://github.com/mfridman/tparse
+# usage: go test | $(GOTEST_FORMATTER)
+GOTEST_FORMATTER ?= cat
+ifneq ($(shell command -v tparse),)
+	GOTEST_COVER_OPTS += -json
+	GOTEST_FORMATTER = tparse
+else
+    @echo "建议安装https://github.com/mfridman/tparse"
+ifneq ($(V),0)
+	GOTEST_FORMATTER += -progress
+endif
+endif
+
+# 不带cgo的go build命令
+GO_BUILD = CGO_ENABLED=0 $(GO) build
+# Support CGO cross-compiling for amd64 and arm64 targets
+CGO_CC =
+CROSS_ARCH =
+ifneq ($(GOARCH),$(NATIVE_ARCH))
+    CROSS_ARCH = $(GOARCH)
+endif
+ifeq ($(CROSS_ARCH),arm64)
+    CGO_CC = CC=aarch64-linux-gnu-gcc
+else ifeq ($(CROSS_ARCH),amd64)
+    CGO_CC = CC=x86_64-linux-gnu-gcc
+endif
+# 带cgo的go build命令
+GO_BUILD_WITH_CGO = CGO_ENABLED=1 $(CGO_CC) $(GO) build
+
+GO_BUILD_FLAGS += -ldflags '$(GO_BUILD_LDFLAGS) $(EXTRA_GO_BUILD_LDFLAGS)' -tags '$(call join-with-comma,$(GO_TAGS_FLAGS))' $(EXTRA_GO_BUILD_FLAGS)
+GO_TEST_FLAGS += -tags=$(call join-with-comma,$(GO_TAGS_FLAGS))
+GO_BUILD += $(GO_BUILD_FLAGS)
+GO_BUILD_WITH_CGO += $(GO_BUILD_FLAGS)
+# go test命令
+GO_TEST = CGO_ENABLED=0 $(GO) test $(GO_TEST_FLAGS) $(GOTEST_COVER_OPTS) $(TESTPKGS)
+# go clean命令
+GO_CLEAN = $(GO) clean $(GO_CLEAN_FLAGS)
+# go vet命令
+GO_VET = $(GO) vet
+# go list 命令
+GO_LIST = $(GO) list
+
+# 用于根据环境变量刷新go flags 在调用所有go xxx之前必须先调用这个函数
+define ensure_go_flags
+    $(eval GO_BUILD_LDFLAGS += $(if $(NOSTRIP),,-s -w))
+
+    $(eval GO_BUILD_FLAGS += $(if $(GO_MOD_VENDOR),-mod=vendor,))
+    $(eval GO_BUILD_FLAGS += $(if $(GO_MOD_VENDOR),-mod=vendor,))
+    $(eval GO_CLEAN_FLAGS += $(if $(GO_MOD_VENDOR),-mod=vendor,))
+
+    $(eval GO_BUILD_FLAGS += $(if $(RACE),-race,))
+    $(eval GO_TEST_FLAGS += $(if $(RACE),-race,))
+    $(eval GOTEST_COVER_OPTS += $(if $(RACE),-covermode=atomic,-covermode=count))
+    $(eval GO_BUILD := $(if $(RACE),$(GO_BUILD_WITH_CGO),))
+
+    $(eval GO_BUILD_FLAGS += $(if $(NOOPT),-gcflags="all=-N -l",))
+endef
+
+## golangci-lint相关 ##
+
+# golangci-lint工具版本，保持最新
+# renovate: datasource=docker depName=golangci/golangci-lint
+GOLANGCILINT_WANT_VERSION = v1.56.2
+GOLANGCILINT_IMAGE_SHA = sha256:04c2e881e069d6827ddca7d9c4fcf4de46eda0c10e58692609a047f8a09a0274
+# 本地golangci-lint工具版本
+GOLANGCILINT_VERSION = $(shell golangci-lint version --format short 2>/dev/null)
+##@ GoLint
+golangci-lint: ## Run golangci-lint
+ifneq (,$(findstring $(GOLANGCILINT_WANT_VERSION:v%=%),$(GOLANGCILINT_VERSION)))
+	golangci-lint run $(GOLANGCI_LINT_ARGS)
+else
+	$(CONTAINER_ENGINE) run --rm -v `pwd`:/app -w /app docker.io/golangci/golangci-lint:$(GOLANGCILINT_WANT_VERSION)@$(GOLANGCILINT_IMAGE_SHA) golangci-lint run $(GOLANGCI_LINT_ARGS)
+endif
+
+golangci-lint-fix: ## Run golangci-lint to automatically fix warnings
+	$(QUIET)$(MAKE) golangci-lint GOLANGCI_LINT_ARGS="--fix"
+
+lint: golangci-lint ## Run golangci-lint
+
+lint-fix: golangci-lint-fix ## Run golangci-lint to automatically fix warnings
+
+## swagger相关 ##
+SWAGGER_VERSION := v0.30.3
+SWAGGER := $(CONTAINER_ENGINE) run -u $(shell id -u):$(shell id -g) --rm -v $(ROOT_DIR):$(ROOT_DIR) -w $(ROOT_DIR) --entrypoint swagger quay.io/goswagger/swagger:$(SWAGGER_VERSION)
+
+# 生成等宽的符号行
+define print_line
+	@echo $(shell printf '$(1)%.0s' $$(seq 1 $(TERM_WIDTH)))
+endef
+
+# 生成等宽的符号行，$info方式
+define print_line_info
+	$(info $(shell printf '$(1)%.0s' $$(seq 1 $(TERM_WIDTH))))
+endef
+
+define print_help_line
+  @printf "  \033[36m%-29s\033[0m %s.\n" $(1) $(2)
+endef
+
+# 扫描所有的Makefile文件，并提取一些目标的注释生成help并打印
+# 分类的格式: ##@
+# 目标的格式: ##
+# 使用时可以增加一个target，下面是一个示例
+# .PHONY: help
+# help: FORCE ##print help
+#	$(call print_help_from_makefile)
+# .PHONY: FORCE
+# FORCE: 
+# 	@true
+define print_help_from_makefile
+  @awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z0-9][a-zA-Z0-9 _-]*:.*?##/ { split($$1, targets, " "); for (i in targets) { printf "  \033[36m%-28s\033[0m %s\n", targets[i], $$2 } } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+endef
+
+# 扫描所有的Makefile文件，并提取这样的注释作为参数显示 `#@一些说明`
+# 使用时可以增加一个target，下面是一个示例
+# .PHONY: params
+# params: FORCE
+# 	$(call print_params_from_makefile)
+# .PHONY: FORCE
+# FORCE: 
+# 	@true
+define print_params_from_makefile
+    @awk 'FNR==1 {if (NR>1) print ""; print "\033[36m" FILENAME ": \033[0m"} /^#@/ {gsub(/^#@ */, ""); print $$0}' $(MAKEFILE_LIST)
+endef

@@ -1,0 +1,23 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: "control-plane"
+  image: "kindest/node:v1.29.2@sha256:51a1434a5397193442f0be2a297b488b6c919ce8a3931be0ce822606ea5ca245" #https://github.com/kubernetes-sigs/kind/releases
+  extraPortMappings:
+  - containerPort: 30001
+    hostPort: 30001
+  - containerPort: 30002
+    hostPort: 30002
+  - containerPort: 30003
+    hostPort: 30003
+  - containerPort: 30004
+    hostPort: 30004
+  - containerPort: 30005
+    hostPort: 30005
+  - containerPort: 30006
+    hostPort: 30006
+  - containerPort: 30007
+    hostPort: 30007
+  - containerPort: 30008
+    hostPort: 30008
+# - role: worker
