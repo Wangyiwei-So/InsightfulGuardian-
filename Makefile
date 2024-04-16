@@ -13,7 +13,6 @@ debug: all
 include Makefile.defs
 
 $(TARGET):
-	echo "==="
 #$(call ensure_go_flags)
 #$(GO_BUILD) -o $@
 
