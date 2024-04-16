@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app-pod  # Pod的名称
+  labels:
+    app: my-app  # 可以用于选择器的标签
+spec:
+  containers:
+    - name: my-app-container  # 容器的名称
+      image: my-registry/my-app:4ca588c  # 您构建的Docker镜像的路径
+      imagePullPolicy: Never
+      ports:
+        - containerPort: 8080  # 容器内部的端口号
+      command: ["/app"]  # 运行容器时执行的命令，这里是启动我们的应用

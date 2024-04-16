@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
+############# 拉起kind集群 #############
 
 set -euo pipefail
 
 default_controlplanes=1
 default_workers=1
-default_cluster_name="isg_kind"
+default_cluster_name="isg-kind"
 default_image="kindest/node:v1.29.2@sha256:51a1434a5397193442f0be2a297b488b6c919ce8a3931be0ce822606ea5ca245"
 default_kubeproxy_mode="iptables"
 default_ipfamily="dual"
@@ -83,3 +84,4 @@ kind_cmd="kind create cluster \
 --config kind.yaml \
 --name ${cluster_name}"
 
+bash -c "${kind_cmd}"
